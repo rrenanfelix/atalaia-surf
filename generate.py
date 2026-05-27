@@ -301,8 +301,8 @@ def fetch_data():
 
 # ──────────────────────── Window finder + tips ────────────────────────
 
-def find_window(meta: dict, hours: dict) -> str:
-    """Janela em texto curto (2-4h)."""
+def find_window(meta: dict, hours: dict) -> dict:
+    """Janela ideal com descrição rica como um analista faria."""
     scores = meta["hour_scores"]
     best = meta["best_hr"]
     # expandir vizinhos
@@ -313,9 +313,81 @@ def find_window(meta: dict, hours: dict) -> str:
         candidates.insert(0, sorted_hrs[idx - 1])
     elif idx < len(sorted_hrs) - 1:
         candidates.append(sorted_hrs[idx + 1])
-    start = min(candidates)
-    end = max(candidates) + 1
-    return f"{start}h – {end}h"
+    start_hr = min(candidates)
+    end_hr = max(candidates) + 1
+    window_str = f"{start_hr}h – {end_hr}h"
+
+    # Dados da melhor hora
+    d = hours[best]
+    wh = d["wh"]
+    wp = d["wp"]
+    wdir = deg_to_compass(d["wd"])
+    wspd = d["wspd"]
+    windir_compass = deg_to_compass(d["windir"])
+    wk = wind_kind(d["windir"])
+
+    # Montar descrição do vento
+    if wk == "terral":
+        vento_txt = f"vento terral {windir_compass} ({wspd:.0f} kt) — parede limpa"
+    elif wspd < 4:
+        vento_txt = f"vento fraco ({wspd:.0f} kt) — mar glassy"
+    elif wk == "maral":
+        vento_txt = f"vento maral {windir_compass} ({wspd:.0f} kt) — mar choposo"
+    else:
+        vento_txt = f"vento cruzado {windir_compass} ({wspd:.0f} kt)"
+
+    # Montar descrição da onda
+    if wh >= 1.0:
+        onda_txt = f"onda {wh:.1f}m {wdir} com potência, período {wp:.0f}s"
+    elif wh >= 0.6:
+        onda_txt = f"onda {wh:.1f}m {wdir}, período {wp:.0f}s — surfável pra intermediário"
+    else:
+        onda_txt = f"onda pequena ({wh:.1f}m {wdir}, {wp:.0f}s) — melhor com prancha volumosa"
+
+    # Descrição da maré (se disponível)
+    mare_txt = ""
+    tides = meta.get("tides", [])
+    if tides:
+        # Achar maré mais próxima da janela ideal pra contextualizar
+        for t in tides:
+            hr_int = int(t["time"].split(":")[0])
+            if abs(hr_int - best) <= 3:
+                if t["type"] == "alta":
+                    mare_txt = f", maré alta às {t['time']} ({t['height']:.1f}m)"
+                else:
+                    mare_txt = f", maré baixa às {t['time']} ({t['height']:.1f}m)"
+                break
+        if not mare_txt:
+            # Indicar se tá enchendo ou vazando
+            baixas = [t for t in tides if t["type"] == "baixa"]
+            altas = [t for t in tides if t["type"] == "alta"]
+            if altas and baixas:
+                prim_alta = int(altas[0]["time"].split(":")[0])
+                prim_baixa = int(baixas[0]["time"].split(":")[0])
+                if prim_baixa < best < prim_alta:
+                    mare_txt = f", maré enchendo pra preia {altas[0]['time']}"
+                elif prim_alta < best:
+                    mare_txt = ", maré vazando"
+
+    # Dica contextual
+    if meta["score"] >= 6:
+        dica = "Melhor dia — prioriza essa sessão."
+    elif meta["score"] >= 4:
+        if wk == "terral":
+            dica = "Dia razoável com vento favorável."
+        else:
+            dica = "Onda ok mas vento não ajuda muito."
+    elif wh < 0.5:
+        dica = "Flat day — só se for muito fã. Leva longboard ou SUP."
+    else:
+        dica = "Condições fracas — se entrar, mate cedo quando o vento tiver mais calmo."
+
+    return {
+        "range": window_str,
+        "description": f"<strong>{window_str}</strong> · {vento_txt}{mare_txt}. {onda_txt}.",
+        "tip": dica,
+        "is_bad": meta["score"] < 3.5,
+    }
 
 
 def gear_tip(sst: float) -> tuple[str, str]:
@@ -395,6 +467,7 @@ def render_day_card(meta: dict, hours: dict) -> str:
         rows.append("".join(cells))
 
     window = find_window(meta, hours)
+    # Estrela pro melhor dia da lista (será adicionada externamente)
     return f"""
     <div class="day-card">
       <div class="day-head {cls}">
@@ -423,9 +496,9 @@ def render_day_card(meta: dict, hours: dict) -> str:
         </table>
       </div>
       {render_tides(meta['tides'])}
-      <div class="window">
-        <div class="win-label">🎯 Janela ideal</div>
-        <div class="win-text"><strong>{window}</strong> · maior score do dia</div>
+      <div class="window{'  bad' if window['is_bad'] else ''}">
+        <div class="win-label">{'⚠️ Dia fraco' if window['is_bad'] else '🎯 Janela ideal'}</div>
+        <div class="win-text">{window['description']}<br><em>{window['tip']}</em></div>
       </div>
     </div>
     """
@@ -540,6 +613,8 @@ def render_html(by_day: dict, days_meta: list) -> str:
   .tide-pill.alta{{border-color:#0ea5e9}}
   .tide-pill.baixa{{border-color:#64748b;opacity:0.85}}
   .window{{margin:0 18px 18px;padding:12px;background:rgba(45,212,191,0.08);border:1px solid rgba(45,212,191,0.3);border-radius:10px}}
+  .window.bad{{background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.3)}}
+  .window.bad .win-label{{color:#fca5a5}}
   .win-label{{color:var(--accent);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}}
   .win-text{{margin-top:4px;font-size:14px;line-height:1.5}}
   .charts{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:28px}}
