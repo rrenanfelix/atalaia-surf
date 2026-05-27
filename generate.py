@@ -162,43 +162,59 @@ def score_day(hours: dict, rain_mm: float) -> tuple[float, dict]:
 
 # ──────────────────────── Marés ────────────────────────
 
-def fetch_tides() -> dict[str, list[dict]]:
-    """Tenta scraping do tabuademares.com. Retorna {date_iso: [{time, height, type}]}."""
+def fetch_tides() -> dict:
+    """Scraping do tabuademares.com (HTML real usa tabelas <td>, não tabs).
+
+    Retorna {date_iso: [{time, height, type}]}.
+    """
     try:
         html = fetch("https://tabuademares.com/br/santa-catarina/itajai/previsao/mares", timeout=20)
-    except Exception:
+    except Exception as e:
+        print(f"⚠️  fetch_tides falhou: {e}")
         return {}
-    # Pattern: <day><month_pt> ... COEFICIENTE ... <hh:mm><tab><X,Y m><tab><coef>
-    weekday_re = r"(Domingo|Segunda-feira|Terça-feira|Quarta-feira|Quinta-feira|Sexta-feira|Sábado)"
-    block_re = re.compile(
-        r"(\d{1,2})\s*\n\s*(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\s*\n\s*"
-        + weekday_re
-        + r".*?COEFICIENTE DE MARÉS\s*\n\s*(\d+)\s*-\s*(\d+)(.+?)(?=\d{1,2}\s*\n\s*(?:JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\s*\n|$)",
-        re.DOTALL,
-    )
-    tide_re = re.compile(r"(\d{1,2}:\d{2})\s*\n?\s*(\d,\d)\s*m\s*\n?\s*(\d+)")
+
     months = {"JAN": 1, "FEV": 2, "MAR": 3, "ABR": 4, "MAI": 5, "JUN": 6,
               "JUL": 7, "AGO": 8, "SET": 9, "OUT": 10, "NOV": 11, "DEZ": 12}
     year = datetime.now(BR).year
-    out: dict[str, list[dict]] = {}
-    for m in block_re.finditer(html):
-        day = int(m.group(1))
-        month = months[m.group(2)]
+
+    # Cada dia: marker "DD MES" precede uma tabela de marés
+    # Marker no HTML aparece como text "27 MAI" perto do bloco da tabela
+    date_marker_re = re.compile(
+        r"(\d{1,2})\s+(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\b"
+    )
+    # Pattern de uma linha de maré dentro de <tr>: ícone (bajamar/pleamar), hora, altura, coef
+    tide_row_re = re.compile(
+        r'icon-ficha_(bajamar|pleamar)[^<]*</span></td>\s*'
+        r'<td>(\d{1,2}:\d{2})</td>\s*'
+        r'<td><span class="tabla_mareas_marea_altura_numero">(\d+,\d+)</span>',
+        re.DOTALL,
+    )
+
+    # Encontrar todos os date markers e suas posições
+    markers = list(date_marker_re.finditer(html))
+    out: dict = {}
+    for i, m in enumerate(markers):
+        try:
+            day = int(m.group(1))
+            month = months[m.group(2)]
+        except (KeyError, ValueError):
+            continue
         date_iso = f"{year}-{month:02d}-{day:02d}"
-        body = m.group(6)
+        # Pegar o trecho HTML entre esse marker e o próximo
+        start = m.end()
+        end = markers[i + 1].start() if i + 1 < len(markers) else min(start + 6000, len(html))
+        chunk = html[start:end]
         tides = []
-        for t in tide_re.finditer(body):
-            time_s = t.group(1)
-            height = float(t.group(2).replace(",", "."))
-            tides.append({"time": time_s, "height": height})
-        # classify type: highest 2 are alta, lowest 2 are baixa
+        for tr in tide_row_re.finditer(chunk):
+            kind, time_s, height_s = tr.group(1), tr.group(2), tr.group(3)
+            height = float(height_s.replace(",", "."))
+            tides.append({
+                "time": time_s,
+                "height": height,
+                "type": "alta" if kind == "pleamar" else "baixa",
+            })
         if tides:
-            sorted_h = sorted(tides, key=lambda x: x["height"], reverse=True)
-            half = len(sorted_h) // 2 or 1
-            altas = {id(t) for t in sorted_h[:half]}
-            for t in tides:
-                t["type"] = "alta" if id(t) in altas else "baixa"
-        out[date_iso] = tides
+            out[date_iso] = tides
     return out
 
 
@@ -593,19 +609,6 @@ def render_html(by_day: dict, days_meta: list) -> str:
   </section>
 
   {render_gear(sst_avg)}
-
-  <section class="surfguru-card">
-    <div class="surfguru-head">
-      <h2>📡 Previsão Surfguru (referência)</h2>
-      <a href="https://surfguru.com.br/previsao/brasil/santa-catarina/itajai/praia-atalaia" target="_blank" class="sg-link">abrir no Surfguru →</a>
-    </div>
-    <p class="muted">Carregado direto do Surfguru pra você cruzar com minha análise. Se discordar, o pico é do Surfguru — eles têm 15+ anos de modelagem local.</p>
-    <div class="iframe-wrap">
-      <iframe src="https://surfguru.com.br/previsao/brasil/santa-catarina/itajai/praia-atalaia"
-              loading="lazy" referrerpolicy="no-referrer"
-              style="width:100%;height:1200px;border:0;border-radius:8px;background:#fff"></iframe>
-    </div>
-  </section>
 
   <div class="notes">
     <h3>📝 Notas técnicas</h3>
