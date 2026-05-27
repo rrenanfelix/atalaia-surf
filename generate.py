@@ -1,34 +1,42 @@
 #!/usr/bin/env python3
 """
-Atalaia Surf Report — gerador automático.
+Atalaia Surf Report — gerador automático (v2).
 
-Busca dados frescos do Open-Meteo (Wavewatch III + GFS) para a Praia do Atalaia
-(Itajaí / SC), calcula o ranking dos próximos 3 dias para um surfista
-intermediário, e regrava o index.html.
+Busca dados frescos do Open-Meteo (Wavewatch III + GFS) + marés do
+Tabuademares para a Praia do Atalaia (Itajaí / SC), calcula ranking
+discriminativo dos próximos 3 dias para surfista intermediário,
+e regrava o index.html.
 
 Roda diariamente via GitHub Actions às 6h BRT.
 """
 
 import json
+import re
 import urllib.request
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-# ───────── Configuração ─────────
 LAT = -26.92
 LON = -48.64
 TZ = "America/Sao_Paulo"
 BR = ZoneInfo(TZ)
-KEY_HOURS = [6, 9, 12, 15, 18]
+HOURS_FULL = list(range(0, 24))
+HOURS_KEY = [6, 9, 12, 15, 18]
+SLOT_WEIGHTS = {6: 2.0, 9: 2.5, 12: 2.0, 15: 1.3, 18: 1.0}  # manhã pesa mais
+TOTAL_WEIGHT = sum(SLOT_WEIGHTS.values())  # 8.8
 
-# Atalaia: beach break com molhe, swell ideal SE (135°), vento ideal terral (W/NW/SW)
+
+def fetch(url: str, timeout=30) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "atalaia-surf-bot/2.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8")
 
 
-def fetch(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "atalaia-surf-bot/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode("utf-8"))
+def fetch_json(url: str) -> dict:
+    return json.loads(fetch(url))
 
+
+# ──────────────────────── Helpers ────────────────────────
 
 def deg_to_compass(deg: float) -> str:
     dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
@@ -37,7 +45,7 @@ def deg_to_compass(deg: float) -> str:
 
 
 def wind_kind(deg: float) -> str:
-    """Atalaia faz fundo pra leste — vento de W/NW/SW é terral, E/NE/SE é maral."""
+    """Atalaia faz fundo pra E — vento de W/NW/SW é terral, E/NE/SE é maral."""
     d = deg % 360
     if 200 <= d <= 340:
         return "terral"
@@ -46,10 +54,279 @@ def wind_kind(deg: float) -> str:
     return "cruzado"
 
 
+# ──────────────────────── Scoring discriminativo ────────────────────────
+
+def score_wave(h: float) -> float:
+    """Onda intermediário: ideal 0.8–1.5m. Retorna 0–2."""
+    if h < 0.3:
+        return 0.0
+    if h < 0.5:
+        return 0.5
+    if h < 0.7:
+        return 1.0
+    if h < 0.9:
+        return 1.6
+    if h < 1.3:
+        return 2.0
+    if h < 1.8:
+        return 1.7
+    return 1.2  # grande demais
+
+
+def score_period(p: float) -> float:
+    """Período mais longo = mais power. Retorna 0–1.5."""
+    if p < 5:
+        return 0.0
+    if p < 6:
+        return 0.4
+    if p < 7:
+        return 0.7
+    if p < 8:
+        return 1.0
+    if p < 10:
+        return 1.3
+    return 1.5
+
+
+def score_wind(speed_kt: float, dir_deg: float) -> float:
+    """Vento: terral leve = +2; maral forte = −2. Retorna −2 a +2."""
+    k = wind_kind(dir_deg)
+    s = speed_kt
+    if s < 3:
+        return 1.5  # glassy independente da direção
+    if k == "terral":
+        if s < 8:
+            return 2.0
+        if s < 14:
+            return 1.4
+        if s < 20:
+            return 0.5
+        return -0.5  # terral forte demais
+    if k == "cruzado":
+        if s < 8:
+            return 0.5
+        if s < 14:
+            return -0.3
+        return -0.8
+    # maral
+    if s < 5:
+        return -0.3
+    if s < 10:
+        return -1.2
+    return -2.0
+
+
+def score_swell_direction(deg: float) -> float:
+    """Atalaia ideal SE (135°). Retorna 0–1."""
+    diff = min(abs(deg - 135), 360 - abs(deg - 135))
+    if diff < 25:
+        return 1.0
+    if diff < 50:
+        return 0.6
+    if diff < 80:
+        return 0.3
+    return 0.0
+
+
+def score_hour(h: dict) -> float:
+    """Score 0–~6.5 de uma hora-chave."""
+    return (
+        score_wave(h["wh"])
+        + score_period(h["wp"])
+        + score_wind(h["wspd"], h["windir"])
+        + score_swell_direction(h["wd"])
+    )
+
+
+def score_day(hours: dict, rain_mm: float) -> tuple[float, dict]:
+    """Score 0–10 do dia, mais info da melhor janela."""
+    total = 0.0
+    hour_scores = {}
+    for hr in HOURS_KEY:
+        s = score_hour(hours[hr])
+        hour_scores[hr] = s
+        total += s * SLOT_WEIGHTS[hr]
+    # max possível: ~6.5 * 8.8 = 57
+    raw = total / 57 * 10
+    # penaliza chuva forte
+    if rain_mm > 5:
+        raw -= 1.5
+    elif rain_mm > 2:
+        raw -= 0.6
+    raw = max(0.0, min(10.0, raw))
+
+    # Best window (consecutive 2-3h with highest avg)
+    best_hr = max(hour_scores, key=lambda k: hour_scores[k])
+    return round(raw, 1), {"hour_scores": hour_scores, "best_hr": best_hr}
+
+
+# ──────────────────────── Marés ────────────────────────
+
+def fetch_tides() -> dict[str, list[dict]]:
+    """Tenta scraping do tabuademares.com. Retorna {date_iso: [{time, height, type}]}."""
+    try:
+        html = fetch("https://tabuademares.com/br/santa-catarina/itajai/previsao/mares", timeout=20)
+    except Exception:
+        return {}
+    # Pattern: <day><month_pt> ... COEFICIENTE ... <hh:mm><tab><X,Y m><tab><coef>
+    weekday_re = r"(Domingo|Segunda-feira|Terça-feira|Quarta-feira|Quinta-feira|Sexta-feira|Sábado)"
+    block_re = re.compile(
+        r"(\d{1,2})\s*\n\s*(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\s*\n\s*"
+        + weekday_re
+        + r".*?COEFICIENTE DE MARÉS\s*\n\s*(\d+)\s*-\s*(\d+)(.+?)(?=\d{1,2}\s*\n\s*(?:JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\s*\n|$)",
+        re.DOTALL,
+    )
+    tide_re = re.compile(r"(\d{1,2}:\d{2})\s*\n?\s*(\d,\d)\s*m\s*\n?\s*(\d+)")
+    months = {"JAN": 1, "FEV": 2, "MAR": 3, "ABR": 4, "MAI": 5, "JUN": 6,
+              "JUL": 7, "AGO": 8, "SET": 9, "OUT": 10, "NOV": 11, "DEZ": 12}
+    year = datetime.now(BR).year
+    out: dict[str, list[dict]] = {}
+    for m in block_re.finditer(html):
+        day = int(m.group(1))
+        month = months[m.group(2)]
+        date_iso = f"{year}-{month:02d}-{day:02d}"
+        body = m.group(6)
+        tides = []
+        for t in tide_re.finditer(body):
+            time_s = t.group(1)
+            height = float(t.group(2).replace(",", "."))
+            tides.append({"time": time_s, "height": height})
+        # classify type: highest 2 are alta, lowest 2 are baixa
+        if tides:
+            sorted_h = sorted(tides, key=lambda x: x["height"], reverse=True)
+            half = len(sorted_h) // 2 or 1
+            altas = {id(t) for t in sorted_h[:half]}
+            for t in tides:
+                t["type"] = "alta" if id(t) in altas else "baixa"
+        out[date_iso] = tides
+    return out
+
+
+# ──────────────────────── Data fetch ────────────────────────
+
+def fetch_data():
+    today = datetime.now(BR).date()
+    start = today.isoformat()
+    end = (today + timedelta(days=2)).isoformat()
+
+    marine = fetch_json(
+        f"https://marine-api.open-meteo.com/v1/marine?latitude={LAT}&longitude={LON}"
+        f"&hourly=wave_height,wave_direction,wave_period,swell_wave_height,"
+        f"swell_wave_direction,swell_wave_period,sea_surface_temperature"
+        f"&start_date={start}&end_date={end}&timezone={TZ}"
+    )
+    weather = fetch_json(
+        f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}"
+        f"&hourly=temperature_2m,precipitation,cloud_cover,wind_speed_10m,"
+        f"wind_direction_10m,wind_gusts_10m"
+        f"&daily=sunrise,sunset,temperature_2m_max,temperature_2m_min,precipitation_sum"
+        f"&start_date={start}&end_date={end}&timezone={TZ}&wind_speed_unit=kn"
+    )
+    tides = fetch_tides()
+
+    by_day: dict[str, dict] = {}
+    mh, wh = marine["hourly"], weather["hourly"]
+    for i, t in enumerate(mh["time"]):
+        date_s, hour = t[:10], int(t[11:13])
+        if hour not in HOURS_KEY:
+            continue
+        by_day.setdefault(date_s, {})[hour] = {
+            "wh": mh["wave_height"][i],
+            "wd": mh["wave_direction"][i],
+            "wp": mh["wave_period"][i],
+            "sst": mh["sea_surface_temperature"][i],
+        }
+    for i, t in enumerate(wh["time"]):
+        date_s, hour = t[:10], int(t[11:13])
+        if hour not in HOURS_KEY or date_s not in by_day or hour not in by_day[date_s]:
+            continue
+        by_day[date_s][hour].update({
+            "temp": wh["temperature_2m"][i],
+            "wspd": wh["wind_speed_10m"][i],
+            "windir": wh["wind_direction_10m"][i],
+            "wgust": wh["wind_gusts_10m"][i],
+        })
+
+    weekday = {0: "Segunda", 1: "Terça", 2: "Quarta", 3: "Quinta",
+               4: "Sexta", 5: "Sábado", 6: "Domingo"}
+    months_pt = ["jan", "fev", "mar", "abr", "mai", "jun",
+                 "jul", "ago", "set", "out", "nov", "dez"]
+
+    days_meta = []
+    for i, date_s in enumerate(sorted(by_day.keys())):
+        d = datetime.strptime(date_s, "%Y-%m-%d").date()
+        hours = by_day[date_s]
+        rain = weather["daily"]["precipitation_sum"][i]
+        score, info = score_day(hours, rain)
+        whs = [hours[h]["wh"] for h in HOURS_KEY if h in hours]
+        wps = [hours[h]["wp"] for h in HOURS_KEY if h in hours]
+        ssts = [hours[h]["sst"] for h in HOURS_KEY if h in hours]
+        days_meta.append({
+            "date_s": date_s,
+            "weekday": weekday[d.weekday()],
+            "short": f"{d.day:02d} {months_pt[d.month-1]}",
+            "tmax": weather["daily"]["temperature_2m_max"][i],
+            "tmin": weather["daily"]["temperature_2m_min"][i],
+            "rain": rain,
+            "sunrise": weather["daily"]["sunrise"][i][11:16],
+            "sunset": weather["daily"]["sunset"][i][11:16],
+            "wh_min": round(min(whs), 2),
+            "wh_max": round(max(whs), 2),
+            "wp_avg": round(sum(wps) / len(wps), 1),
+            "sst_avg": round(sum(ssts) / len(ssts), 1),
+            "score": score,
+            "best_hr": info["best_hr"],
+            "hour_scores": info["hour_scores"],
+            "tides": tides.get(date_s, []),
+        })
+
+    return by_day, days_meta
+
+
+# ──────────────────────── Window finder + tips ────────────────────────
+
+def find_window(meta: dict, hours: dict) -> str:
+    """Janela em texto curto (2-4h)."""
+    scores = meta["hour_scores"]
+    best = meta["best_hr"]
+    # expandir vizinhos
+    sorted_hrs = sorted(HOURS_KEY)
+    idx = sorted_hrs.index(best)
+    candidates = [best]
+    if idx > 0 and scores[sorted_hrs[idx - 1]] > scores[sorted_hrs[min(idx + 1, len(sorted_hrs) - 1)]]:
+        candidates.insert(0, sorted_hrs[idx - 1])
+    elif idx < len(sorted_hrs) - 1:
+        candidates.append(sorted_hrs[idx + 1])
+    start = min(candidates)
+    end = max(candidates) + 1
+    return f"{start}h – {end}h"
+
+
+def gear_tip(sst: float) -> tuple[str, str]:
+    """Retorna (roupa, parafina)."""
+    if sst >= 24:
+        return "lycra ou bermuda climber", "tropical (24°C+)"
+    if sst >= 22:
+        return "top 2 mm + bermuda OU long john 2/2", "warm (21-25°C)"
+    if sst >= 19:
+        return "long john 3/2 mm", "cool (18-23°C)"
+    if sst >= 16:
+        return "full suit 3/2 mm", "cold (14-19°C)"
+    return "full suit 4/3 mm + capuz", "cold (14-19°C)"
+
+
+def day_class(score: float) -> str:
+    if score >= 5.5:
+        return "good"
+    if score >= 3.5:
+        return "mid"
+    return "bad"
+
+
 def cell_class_wave(h: float) -> str:
-    if h >= 0.8:
+    if h >= 0.7:
         return "cell-good"
-    if h >= 0.6:
+    if h >= 0.5:
         return "cell-mid"
     return "cell-bad"
 
@@ -63,129 +340,27 @@ def cell_class_period(p: float) -> str:
 
 
 def cell_class_wind(ws: float, wdir: float) -> str:
-    kind = wind_kind(wdir)
-    # vento terral leve = ótimo; calmo = ótimo; maral forte = ruim
-    if kind == "terral" and ws < 12:
+    k = wind_kind(wdir)
+    if (k == "terral" and ws < 12) or ws < 4:
         return "cell-good"
-    if ws < 5:
-        return "cell-good"
-    if kind == "maral" and ws > 8:
+    if k == "maral" and ws > 6:
         return "cell-bad"
     return "cell-mid"
 
 
-def score_day(hours: dict) -> float:
-    """Score 0-10 baseado nas janelas surfáveis (6h-12h primário)."""
-    morning = [h for h in KEY_HOURS if h <= 12]
-    pts = 0
-    for hr in morning:
-        d = hours[hr]
-        # onda
-        if d["wh"] >= 0.7:
-            pts += 1.5
-        elif d["wh"] >= 0.5:
-            pts += 0.8
-        # período
-        if d["wp"] >= 7:
-            pts += 1.0
-        elif d["wp"] >= 6:
-            pts += 0.5
-        # vento
-        k = wind_kind(d["windir"])
-        if k == "terral" and d["wspd"] < 12:
-            pts += 1.0
-        elif d["wspd"] < 5:
-            pts += 0.7
-        elif k == "maral":
-            pts -= 0.5
-    return round(max(0, min(10, pts)), 1)
+# ──────────────────────── Render ────────────────────────
 
-
-def fetch_data():
-    today = datetime.now(BR).date()
-    start = today.isoformat()
-    end = (today + timedelta(days=2)).isoformat()
-
-    marine = fetch(
-        f"https://marine-api.open-meteo.com/v1/marine?latitude={LAT}&longitude={LON}"
-        f"&hourly=wave_height,wave_direction,wave_period,swell_wave_height,"
-        f"swell_wave_direction,swell_wave_period,sea_surface_temperature"
-        f"&start_date={start}&end_date={end}&timezone={TZ}"
-    )
-    weather = fetch(
-        f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}"
-        f"&hourly=temperature_2m,precipitation,cloud_cover,wind_speed_10m,"
-        f"wind_direction_10m,wind_gusts_10m"
-        f"&daily=sunrise,sunset,temperature_2m_max,temperature_2m_min,precipitation_sum"
-        f"&start_date={start}&end_date={end}&timezone={TZ}&wind_speed_unit=kn"
-    )
-
-    by_day = {}
-    mh, wh = marine["hourly"], weather["hourly"]
-    for i, t in enumerate(mh["time"]):
-        date_s, hour = t[:10], int(t[11:13])
-        if hour not in KEY_HOURS:
-            continue
-        by_day.setdefault(date_s, {})[hour] = {
-            "wh": mh["wave_height"][i],
-            "wd": mh["wave_direction"][i],
-            "wp": mh["wave_period"][i],
-            "sst": mh["sea_surface_temperature"][i],
-        }
-    for i, t in enumerate(wh["time"]):
-        date_s, hour = t[:10], int(t[11:13])
-        if hour not in KEY_HOURS or date_s not in by_day or hour not in by_day[date_s]:
-            continue
-        by_day[date_s][hour].update({
-            "temp": wh["temperature_2m"][i],
-            "wspd": wh["wind_speed_10m"][i],
-            "windir": wh["wind_direction_10m"][i],
-            "wgust": wh["wind_gusts_10m"][i],
-        })
-
-    # Daily aggregates
-    daily = {}
-    for date_s in by_day:
-        whs = [by_day[date_s][h]["wh"] for h in KEY_HOURS if h in by_day[date_s]]
-        wps = [by_day[date_s][h]["wp"] for h in KEY_HOURS if h in by_day[date_s]]
-        ssts = [by_day[date_s][h]["sst"] for h in KEY_HOURS if h in by_day[date_s]]
-        daily[date_s] = {
-            "wh_min": round(min(whs), 2),
-            "wh_max": round(max(whs), 2),
-            "wp_avg": round(sum(wps) / len(wps), 1),
-            "sst_avg": round(sum(ssts) / len(ssts), 1),
-            "score": score_day(by_day[date_s]),
-        }
-
-    weekday = {0: "Segunda", 1: "Terça", 2: "Quarta", 3: "Quinta",
-               4: "Sexta", 5: "Sábado", 6: "Domingo"}
-    months = ["jan", "fev", "mar", "abr", "mai", "jun",
-              "jul", "ago", "set", "out", "nov", "dez"]
-
-    days_meta = []
-    for i, date_s in enumerate(sorted(by_day.keys())):
-        d = datetime.strptime(date_s, "%Y-%m-%d").date()
-        days_meta.append({
-            "date_s": date_s,
-            "weekday": weekday[d.weekday()],
-            "short": f"{d.day:02d} {months[d.month-1]}",
-            "tmax": weather["daily"]["temperature_2m_max"][i],
-            "tmin": weather["daily"]["temperature_2m_min"][i],
-            "rain": weather["daily"]["precipitation_sum"][i],
-            "sunrise": weather["daily"]["sunrise"][i][11:16],
-            "sunset": weather["daily"]["sunset"][i][11:16],
-            **daily[date_s],
-        })
-
-    return by_day, days_meta, weather["daily"]
-
-
-def day_class(score: float) -> str:
-    if score >= 6:
-        return "good"
-    if score >= 4:
-        return "mid"
-    return "bad"
+def render_tides(tides: list[dict]) -> str:
+    if not tides:
+        return '<div class="tides"><div class="muted">Marés indisponíveis — consulte <a href="https://tabuademares.com/br/santa-catarina/itajai" target="_blank">tabuademares</a></div></div>'
+    pills = []
+    for t in tides:
+        cls = "alta" if t.get("type") == "alta" else "baixa"
+        arrow = "▲" if cls == "alta" else "▼"
+        pills.append(
+            f'<div class="tide-pill {cls}">{arrow} <span class="tide-time">{t["time"]}</span> {str(t["height"]).replace(".", ",")} m</div>'
+        )
+    return f'<div class="tides"><h3>Marés</h3><div class="tide-row">{"".join(pills)}</div></div>'
 
 
 def render_day_card(meta: dict, hours: dict) -> str:
@@ -198,23 +373,23 @@ def render_day_card(meta: dict, hours: dict) -> str:
         ("windir", lambda v: deg_to_compass(v), lambda d: cell_class_wind(d["wspd"], d["windir"])),
     ]:
         cells = []
-        for hr in KEY_HOURS:
+        for hr in HOURS_KEY:
             d = hours[hr]
-            val = d[label_key]
-            cells.append(f'<td class="{cls_fn(d)}">{fmt(val)}</td>')
+            cells.append(f'<td class="{cls_fn(d)}">{fmt(d[label_key])}</td>')
         rows.append("".join(cells))
 
+    window = find_window(meta, hours)
     return f"""
     <div class="day-card">
       <div class="day-head {cls}">
         <div>
           <div class="day-title">{meta['weekday']} · {meta['short']}</div>
-          <div class="day-sub">☀️ {meta['tmin']:.1f}° – {meta['tmax']:.1f}°C  ·  💧 {meta['rain']:.1f} mm  ·  ☀ {meta['sunrise']}–{meta['sunset']}</div>
+          <div class="day-sub">☀️ {meta['tmin']:.0f}° – {meta['tmax']:.0f}°C · 💧 {meta['rain']:.1f}mm · ☀ {meta['sunrise']}–{meta['sunset']}</div>
         </div>
         <div class="day-score {cls}">{meta['score']}</div>
       </div>
       <div class="stats">
-        <div class="stat"><div class="stat-label">Onda</div><div class="stat-value">{str(meta['wh_min']).replace('.', ',')} – {str(meta['wh_max']).replace('.', ',')} m</div></div>
+        <div class="stat"><div class="stat-label">Onda</div><div class="stat-value">{str(meta['wh_min']).replace('.', ',')}–{str(meta['wh_max']).replace('.', ',')} m</div></div>
         <div class="stat"><div class="stat-label">Período</div><div class="stat-value">{str(meta['wp_avg']).replace('.', ',')} s</div></div>
         <div class="stat"><div class="stat-label">SST</div><div class="stat-value">{str(meta['sst_avg']).replace('.', ',')} °C</div></div>
         <div class="stat"><div class="stat-label">Score</div><div class="stat-value">{meta['score']}/10</div></div>
@@ -231,6 +406,11 @@ def render_day_card(meta: dict, hours: dict) -> str:
           </tbody>
         </table>
       </div>
+      {render_tides(meta['tides'])}
+      <div class="window">
+        <div class="win-label">🎯 Janela ideal</div>
+        <div class="win-text"><strong>{window}</strong> · maior score do dia</div>
+      </div>
     </div>
     """
 
@@ -246,11 +426,27 @@ def render_ranking(days_meta: list) -> str:
           <div class="medal">{medals[i]}</div>
           <div>
             <div class="rank-name">{d['weekday']}, {d['short']}</div>
-            <div class="rank-reason">Onda {str(d['wh_min']).replace('.', ',')}–{str(d['wh_max']).replace('.', ',')} m · período {str(d['wp_avg']).replace('.', ',')} s · score {d['score']}/10</div>
+            <div class="rank-reason">Onda {str(d['wh_min']).replace('.', ',')}–{str(d['wh_max']).replace('.', ',')}m · período {str(d['wp_avg']).replace('.', ',')}s · janela em torno de {d['best_hr']}h</div>
           </div>
           <div class="score" style="color:var(--{colors[i]})">{d['score']}</div>
         </div>""")
     return "".join(rows)
+
+
+def render_gear(sst: float) -> str:
+    roupa, parafina = gear_tip(sst)
+    return f"""
+  <div class="gear-card">
+    <h2>🧥 Equipamento sugerido</h2>
+    <p class="muted">Temp. água ~{sst:.1f}°C — base pras recomendações.</p>
+    <div class="gear-grid">
+      <div class="gear-item"><div class="gear-icon">🌡️</div><div class="gear-title">Roupa</div><div class="gear-desc">{roupa}</div></div>
+      <div class="gear-item"><div class="gear-icon">🏄</div><div class="gear-title">Prancha</div><div class="gear-desc">Ondas pequenas-médias e período curto pedem fish, mid-length ou longboard. Shortboard só quando passar 0,9 m com período &gt;= 8 s.</div></div>
+      <div class="gear-item"><div class="gear-icon">🕯️</div><div class="gear-title">Parafina</div><div class="gear-desc">{parafina}</div></div>
+      <div class="gear-item"><div class="gear-icon">⚠️</div><div class="gear-title">Atenção</div><div class="gear-desc">Corrente do canal do Itajaí-Açu é forte na vazante. Cuidado na maré descendo, especialmente coef &gt; 80.</div></div>
+    </div>
+  </div>
+    """
 
 
 def render_html(by_day: dict, days_meta: list) -> str:
@@ -260,12 +456,9 @@ def render_html(by_day: dict, days_meta: list) -> str:
     day_cards = "\n".join(render_day_card(m, by_day[m["date_s"]]) for m in days_meta)
     ranking = render_ranking(days_meta)
 
-    # Chart data: 24 buckets de 3h (5 dias seria muito). Aqui faz 15 pontos (3 dias × 5 horas-chave)
-    labels = []
-    wave_arr = []
-    wind_arr = []
+    labels, wave_arr, wind_arr = [], [], []
     for m in days_meta:
-        for hr in KEY_HOURS:
+        for hr in HOURS_KEY:
             labels.append(f"{m['weekday'][:3]} {hr}h")
             wave_arr.append(by_day[m["date_s"]][hr]["wh"])
             wind_arr.append(by_day[m["date_s"]][hr]["wspd"])
@@ -287,6 +480,7 @@ def render_html(by_day: dict, days_meta: list) -> str:
   h1{{margin:0;font-size:28px;font-weight:700;letter-spacing:-0.3px}}
   h1 .wave{{color:var(--accent)}}
   .subtitle{{color:var(--muted);font-size:14px;margin-top:6px}}
+  .muted{{color:var(--muted);font-size:13px}}
   .badge{{display:inline-block;padding:4px 10px;border-radius:999px;background:var(--panel2);color:var(--accent);font-size:12px;font-weight:600;border:1px solid var(--border)}}
   .meta-bar{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:16px}}
   .meta{{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px}}
@@ -315,7 +509,7 @@ def render_html(by_day: dict, days_meta: list) -> str:
   .stat-label{{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:0.5px}}
   .stat-value{{font-size:15px;font-weight:600;margin-top:4px}}
   .hourly{{padding:14px 18px}}
-  .hourly h3{{margin:0 0 10px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:600}}
+  .hourly h3, .tides h3{{margin:0 0 10px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:600}}
   table.hr-tbl{{width:100%;border-collapse:collapse;font-size:12px}}
   table.hr-tbl th{{font-weight:500;color:var(--muted);text-align:center;padding:6px 4px;font-size:11px;border-bottom:1px solid var(--border)}}
   table.hr-tbl td{{text-align:center;padding:6px 4px;border-bottom:1px solid #122a44}}
@@ -323,11 +517,39 @@ def render_html(by_day: dict, days_meta: list) -> str:
   .cell-good{{background:rgba(34,197,94,0.18);color:#86efac;font-weight:600;border-radius:4px}}
   .cell-mid{{background:rgba(245,158,11,0.15);color:#fcd34d;font-weight:600;border-radius:4px}}
   .cell-bad{{background:rgba(239,68,68,0.15);color:#fca5a5;font-weight:600;border-radius:4px}}
+  .tides{{padding:0 18px 14px}}
+  .tide-row{{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}}
+  .tide-pill{{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px}}
+  .tide-pill .tide-time{{font-weight:700;font-size:13px;display:block}}
+  .tide-pill.alta{{border-color:#0ea5e9}}
+  .tide-pill.baixa{{border-color:#64748b;opacity:0.85}}
+  .window{{margin:0 18px 18px;padding:12px;background:rgba(45,212,191,0.08);border:1px solid rgba(45,212,191,0.3);border-radius:10px}}
+  .win-label{{color:var(--accent);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}}
+  .win-text{{margin-top:4px;font-size:14px;line-height:1.5}}
   .charts{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:28px}}
   @media(max-width:780px){{.charts{{grid-template-columns:1fr}}}}
   .chart-card{{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px}}
   .chart-card h3{{margin:0 0 12px;font-size:14px;font-weight:600}}
   .chart-wrap{{position:relative;height:240px}}
+  .gear-card{{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:28px}}
+  .gear-card h2{{margin:0 0 6px;font-size:18px}}
+  .gear-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:12px}}
+  .gear-item{{background:var(--panel2);border-radius:10px;padding:14px}}
+  .gear-icon{{font-size:24px;margin-bottom:6px}}
+  .gear-title{{font-weight:600;font-size:14px}}
+  .gear-desc{{color:var(--muted);font-size:12px;margin-top:4px;line-height:1.5}}
+  .notes{{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px;font-size:13px;line-height:1.6}}
+  .notes h3{{margin:0 0 8px;font-size:15px}}
+  .notes ul{{margin:8px 0 0;padding-left:20px;color:var(--muted)}}
+  .surfguru-card{{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:28px}}
+  .surfguru-head{{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px}}
+  .surfguru-head h2{{margin:0;font-size:18px}}
+  .sg-link{{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600;background:var(--panel2);padding:6px 12px;border-radius:8px;border:1px solid var(--border)}}
+  .sg-link:hover{{background:var(--border)}}
+  .iframe-wrap{{margin-top:12px;border-radius:10px;overflow:hidden;border:1px solid var(--border)}}
+  .compare{{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}}
+  .compare a{{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--accent);text-decoration:none;font-size:12px;font-weight:600}}
+  .compare a:hover{{background:var(--border)}}
   footer{{color:var(--muted);font-size:11px;text-align:center;padding-top:20px;border-top:1px solid var(--border);margin-top:20px}}
   footer a{{color:var(--accent);text-decoration:none}}
 </style>
@@ -345,7 +567,7 @@ def render_html(by_day: dict, days_meta: list) -> str:
     <div class="meta-bar">
       <div class="meta"><div class="meta-label">Pico</div><div class="meta-value">Atalaia (Molhes)</div></div>
       <div class="meta"><div class="meta-label">Coordenadas</div><div class="meta-value">26.92° S · 48.64° W</div></div>
-      <div class="meta"><div class="meta-label">Swell ideal</div><div class="meta-value">SE</div></div>
+      <div class="meta"><div class="meta-label">Swell ideal</div><div class="meta-value">SE (135°)</div></div>
       <div class="meta"><div class="meta-label">Temp. mar (média)</div><div class="meta-value">{sst_avg:.1f} °C</div></div>
     </div>
   </header>
@@ -370,10 +592,42 @@ def render_html(by_day: dict, days_meta: list) -> str:
     </div>
   </section>
 
+  {render_gear(sst_avg)}
+
+  <section class="surfguru-card">
+    <div class="surfguru-head">
+      <h2>📡 Previsão Surfguru (referência)</h2>
+      <a href="https://surfguru.com.br/previsao/brasil/santa-catarina/itajai/praia-atalaia" target="_blank" class="sg-link">abrir no Surfguru →</a>
+    </div>
+    <p class="muted">Carregado direto do Surfguru pra você cruzar com minha análise. Se discordar, o pico é do Surfguru — eles têm 15+ anos de modelagem local.</p>
+    <div class="iframe-wrap">
+      <iframe src="https://surfguru.com.br/previsao/brasil/santa-catarina/itajai/praia-atalaia"
+              loading="lazy" referrerpolicy="no-referrer"
+              style="width:100%;height:1200px;border:0;border-radius:8px;background:#fff"></iframe>
+    </div>
+  </section>
+
+  <div class="notes">
+    <h3>📝 Notas técnicas</h3>
+    <p>Atalaia é beach break com molhe canalizando. Pede swell SE (135°) e vento terral (W/NW/SW). Canal do rio Itajaí-Açu cria corrente forte na vazante — atenção quando coef. de maré passar 80.</p>
+    <ul>
+      <li>Período curto (&lt;6s): vagas de vento local. Período &gt;= 8s: swell de tempestade, ondas com mais power.</li>
+      <li>Janela terral típica: 6h–12h. Vento gira pra E/SE depois das 14h (maral).</li>
+      <li>Maré média/enchente costuma render melhor.</li>
+    </ul>
+    <div class="compare">
+      <strong style="font-size:12px;color:var(--muted);align-self:center;margin-right:4px">Compare com:</strong>
+      <a href="https://surfguru.com.br/previsao/brasil/santa-catarina/itajai/praia-atalaia" target="_blank">Surfguru →</a>
+      <a href="https://pt.surf-forecast.com/breaks/Atalaia/forecasts/latest/six_day" target="_blank">Surf-Forecast →</a>
+      <a href="https://www.waves.com.br/surf/ondas/picos/sc/itajai/atalaia-meio/" target="_blank">Waves.com.br →</a>
+      <a href="https://tabuademares.com/br/santa-catarina/itajai/previsao/ondas" target="_blank">Tábua de Marés →</a>
+    </div>
+  </div>
+
   <footer>
-    Dados: <a href="https://open-meteo.com/" target="_blank">Open-Meteo</a> (Wavewatch III + GFS) · marés em
-    <a href="https://tabuademares.com/br/santa-catarina/itajai/previsao/mares" target="_blank">Tábua de Marés</a>.<br>
-    Gerado automaticamente via GitHub Actions toda manhã.
+    Dados: <a href="https://open-meteo.com/" target="_blank">Open-Meteo</a> (Wavewatch III + GFS) ·
+    marés <a href="https://tabuademares.com/br/santa-catarina/itajai" target="_blank">Tábua de Marés</a><br>
+    Gerado automaticamente via GitHub Actions toda manhã às 6h BRT · <a href="https://github.com/rrenanfelix/atalaia-surf" target="_blank">código no GitHub</a>
   </footer>
 </div>
 
@@ -408,11 +662,13 @@ new Chart(document.getElementById('windChart'), {{
 
 
 def main():
-    print("Buscando dados do Open-Meteo…")
-    by_day, days_meta, _ = fetch_data()
-    print(f"Coletado: {len(days_meta)} dias")
+    print("Buscando dados…")
+    by_day, days_meta = fetch_data()
+    print(f"\nDias coletados: {len(days_meta)}")
     for m in days_meta:
-        print(f"  {m['date_s']} {m['weekday']}: score {m['score']}/10, onda {m['wh_min']}–{m['wh_max']} m")
+        print(f"  {m['date_s']} {m['weekday']}: score {m['score']}/10, "
+              f"onda {m['wh_min']}–{m['wh_max']}m, melhor hora ~{m['best_hr']}h, "
+              f"marés: {len(m['tides'])}")
     html = render_html(by_day, days_meta)
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html)
