@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Análise de Surf — Praia do Atalaia / Itajaí (27–29 mai 2026)</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0a1929;
+    --panel:#0f2438;
+    --panel2:#152e47;
+    --border:#1e3a5f;
+    --text:#e6edf3;
+    --muted:#8aa2bd;
+    --accent:#2dd4bf;
+    --good:#22c55e;
+    --mid:#f59e0b;
+    --bad:#ef4444;
+    --gold:#fbbf24;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:linear-gradient(180deg,#061321 0%,#0a1929 100%);
+    color:var(--text);min-height:100vh;padding:24px;
+  }
+  .container{max-width:1280px;margin:0 auto}
+  header{
+    border-bottom:1px solid var(--border);padding-bottom:20px;margin-bottom:28px;
+  }
+  .h-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+  h1{margin:0;font-size:28px;font-weight:700;letter-spacing:-0.3px}
+  h1 .wave{color:var(--accent)}
+  .subtitle{color:var(--muted);font-size:14px;margin-top:6px}
+  .badge{
+    display:inline-block;padding:4px 10px;border-radius:999px;
+    background:var(--panel2);color:var(--accent);font-size:12px;font-weight:600;
+    border:1px solid var(--border);
+  }
+  .meta-bar{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+    gap:12px;margin-top:16px;
+  }
+  .meta{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px}
+  .meta-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.5px}
+  .meta-value{font-size:18px;font-weight:600;margin-top:4px}
+
+  .ranking{
+    background:linear-gradient(135deg,#0f2438 0%,#1a3553 100%);
+    border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:28px;
+  }
+  .ranking h2{margin:0 0 14px 0;font-size:18px;font-weight:600}
+  .rank-row{display:grid;grid-template-columns:60px 1fr auto;gap:14px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)}
+  .rank-row:last-child{border-bottom:none}
+  .medal{font-size:32px;text-align:center}
+  .rank-name{font-weight:600;font-size:16px}
+  .rank-reason{color:var(--muted);font-size:13px;margin-top:2px}
+  .score{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+
+  .days{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:20px;margin-bottom:28px}
+  .day-card{
+    background:var(--panel);border:1px solid var(--border);border-radius:14px;overflow:hidden;
+  }
+  .day-head{
+    padding:16px 18px;display:flex;justify-content:space-between;align-items:center;
+    border-bottom:1px solid var(--border);
+  }
+  .day-head.best{background:linear-gradient(90deg,rgba(34,197,94,0.15),transparent)}
+  .day-head.mid{background:linear-gradient(90deg,rgba(245,158,11,0.12),transparent)}
+  .day-head.bad{background:linear-gradient(90deg,rgba(239,68,68,0.10),transparent)}
+  .day-title{font-size:18px;font-weight:700}
+  .day-sub{color:var(--muted);font-size:12px;margin-top:2px}
+  .day-score{font-size:28px;font-weight:800;font-variant-numeric:tabular-nums}
+  .day-score.good{color:var(--good)}
+  .day-score.mid{color:var(--mid)}
+  .day-score.bad{color:var(--bad)}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border)}
+  .stat{background:var(--panel);padding:12px;text-align:center}
+  .stat-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:0.5px}
+  .stat-value{font-size:15px;font-weight:600;margin-top:4px}
+
+  .hourly{padding:14px 18px}
+  .hourly h3{margin:0 0 10px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:600}
+  table.hr-tbl{width:100%;border-collapse:collapse;font-size:12px}
+  table.hr-tbl th{font-weight:500;color:var(--muted);text-align:center;padding:6px 4px;font-size:11px;border-bottom:1px solid var(--border)}
+  table.hr-tbl td{text-align:center;padding:6px 4px;border-bottom:1px solid #122a44}
+  table.hr-tbl td.lbl{text-align:left;color:var(--muted);font-size:11px}
+  .cell-good{background:rgba(34,197,94,0.18);color:#86efac;font-weight:600;border-radius:4px}
+  .cell-mid{background:rgba(245,158,11,0.15);color:#fcd34d;font-weight:600;border-radius:4px}
+  .cell-bad{background:rgba(239,68,68,0.15);color:#fca5a5;font-weight:600;border-radius:4px}
+
+  .window{
+    margin:14px 18px 18px;padding:12px;background:rgba(45,212,191,0.08);
+    border:1px solid rgba(45,212,191,0.3);border-radius:10px;
+  }
+  .window.bad{background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.3)}
+  .win-label{color:var(--accent);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
+  .window.bad .win-label{color:#fca5a5}
+  .win-text{margin-top:4px;font-size:14px;line-height:1.5}
+
+  .tides{padding:0 18px 16px}
+  .tide-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .tide-pill{
+    background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12px;
+  }
+  .tide-pill .tide-time{font-weight:700;font-size:14px;display:block}
+  .tide-pill.alta{border-color:#0ea5e9}
+  .tide-pill.baixa{border-color:#64748b;opacity:0.8}
+
+  .charts{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:28px}
+  @media(max-width:780px){.charts{grid-template-columns:1fr}}
+  .chart-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px}
+  .chart-card h3{margin:0 0 12px;font-size:14px;font-weight:600}
+  .chart-wrap{position:relative;height:240px}
+
+  .gear-card{
+    background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:28px;
+  }
+  .gear-card h2{margin:0 0 12px;font-size:18px}
+  .gear-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .gear-item{background:var(--panel2);border-radius:10px;padding:14px}
+  .gear-icon{font-size:24px;margin-bottom:6px}
+  .gear-title{font-weight:600;font-size:14px}
+  .gear-desc{color:var(--muted);font-size:12px;margin-top:4px;line-height:1.5}
+
+  .legend{
+    display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;font-size:11px;color:var(--muted);
+  }
+  .legend span{display:flex;align-items:center;gap:6px}
+  .legend .dot{width:10px;height:10px;border-radius:3px}
+
+  .notes{
+    background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:20px;font-size:13px;line-height:1.6;color:var(--text)
+  }
+  .notes h3{margin:0 0 8px;font-size:15px}
+  .notes ul{margin:8px 0 0;padding-left:20px;color:var(--muted)}
+
+  footer{color:var(--muted);font-size:11px;text-align:center;padding-top:20px;border-top:1px solid var(--border);margin-top:20px}
+  footer a{color:var(--accent);text-decoration:none}
+
+  .arrow{display:inline-block;transform-origin:center}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="h-top">
+      <div>
+        <h1><span class="wave">≋</span> Análise de Surf — Praia do Atalaia</h1>
+        <div class="subtitle">Itajaí / SC · próximos 3 dias · perfil intermediário</div>
+      </div>
+      <div>
+        <span class="badge">Emitido em 27/mai/2026</span>
+      </div>
+    </div>
+    <div class="meta-bar">
+      <div class="meta"><div class="meta-label">Pico</div><div class="meta-value">Atalaia (Molhes)</div></div>
+      <div class="meta"><div class="meta-label">Coordenadas</div><div class="meta-value">26.92° S · 48.64° W</div></div>
+      <div class="meta"><div class="meta-label">Swell dominante</div><div class="meta-value">E → SE</div></div>
+      <div class="meta"><div class="meta-label">Temp. mar (média)</div><div class="meta-value">20,5 °C</div></div>
+    </div>
+  </header>
+
+  <!-- RANKING -->
+  <section class="ranking">
+    <h2>🏆 Ranking dos 3 dias</h2>
+    <div class="rank-row">
+      <div class="medal">🥇</div>
+      <div>
+        <div class="rank-name">Quinta-feira, 28/mai</div>
+        <div class="rank-reason">Onda mais consistente (~0,7 m SE), período 6,6 s, vento terral leve até meio-dia, céu limpo. Janela ideal 7h–12h.</div>
+      </div>
+      <div class="score" style="color:var(--good)">7.2</div>
+    </div>
+    <div class="rank-row">
+      <div class="medal">🥈</div>
+      <div>
+        <div class="rank-name">Quarta-feira, 27/mai (hoje)</div>
+        <div class="rank-reason">Manhã pequena (~0,5 m) com vento terral perfeito. Onda cresce pra 0,86 m no fim da tarde, mas vento gira pra SE/maral.</div>
+      </div>
+      <div class="score" style="color:var(--mid)">5.5</div>
+    </div>
+    <div class="rank-row">
+      <div class="medal">🥉</div>
+      <div>
+        <div class="rank-name">Sexta-feira, 29/mai</div>
+        <div class="rank-reason">Mar flat (~0,5 m), céu encoberto, vento variável girando pra cruzado. Só pra longboard ou matar saudade.</div>
+      </div>
+      <div class="score" style="color:var(--bad)">3.8</div>
+    </div>
+  </section>
+
+  <!-- DAY CARDS -->
+  <section class="days">
+
+    <!-- DIA 27 -->
+    <div class="day-card">
+      <div class="day-head mid">
+        <div>
+          <div class="day-title">Quarta · 27 mai</div>
+          <div class="day-sub">☀️ 14,6° – 22,2°C  ·  💧 0,2 mm</div>
+        </div>
+        <div class="day-score mid">5.5</div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="stat-label">Onda</div><div class="stat-value">0,5 – 0,9 m</div></div>
+        <div class="stat"><div class="stat-label">Período</div><div class="stat-value">6,0 s</div></div>
+        <div class="stat"><div class="stat-label">Swell</div><div class="stat-value">E → SE</div></div>
+        <div class="stat"><div class="stat-label">SST</div><div class="stat-value">20,4 °C</div></div>
+      </div>
+      <div class="hourly">
+        <h3>Por hora</h3>
+        <table class="hr-tbl">
+          <thead><tr><th class="lbl"></th><th>6h</th><th>9h</th><th>12h</th><th>15h</th><th>18h</th></tr></thead>
+          <tbody>
+            <tr><td class="lbl">Onda (m)</td><td class="cell-bad">0,56</td><td class="cell-bad">0,52</td><td class="cell-bad">0,52</td><td class="cell-bad">0,58</td><td class="cell-mid">0,86</td></tr>
+            <tr><td class="lbl">Período (s)</td><td class="cell-mid">6,4</td><td class="cell-mid">6,3</td><td class="cell-mid">6,3</td><td class="cell-mid">6,0</td><td class="cell-bad">5,0</td></tr>
+            <tr><td class="lbl">Vento (kt)</td><td class="cell-good">2,7</td><td class="cell-good">1,7</td><td class="cell-good">0,7</td><td class="cell-mid">5,9</td><td class="cell-mid">6,3</td></tr>
+            <tr><td class="lbl">Dir. vento</td><td class="cell-good">WSW⬇️</td><td class="cell-good">W⬅️</td><td class="cell-good">ENE↗️</td><td class="cell-bad">E↘️</td><td class="cell-bad">SE↘️</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="tides">
+        <h3 style="margin:0 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:600">Marés (coef. 65–67)</h3>
+        <div class="tide-row">
+          <div class="tide-pill baixa">▼ <span class="tide-time">08:01</span> 0,2 m</div>
+          <div class="tide-pill alta">▲ <span class="tide-time">12:04</span> 0,8 m</div>
+          <div class="tide-pill baixa">▼ <span class="tide-time">20:28</span> 0,2 m</div>
+        </div>
+      </div>
+      <div class="window">
+        <div class="win-label">🎯 Janela ideal</div>
+        <div class="win-text"><strong>7h – 11h</strong> · vento terral W perfeito + maré enchendo pra preia 12:04. Onda pequena mas glassy, ótima pra técnica e longboard.<br>
+        <strong>Alternativa:</strong> 17h–18h se topar vento maral leve com onda crescendo a 0,9 m.</div>
+      </div>
+    </div>
+
+    <!-- DIA 28 -->
+    <div class="day-card">
+      <div class="day-head best">
+        <div>
+          <div class="day-title">Quinta · 28 mai ⭐</div>
+          <div class="day-sub">☀️ 11,1° – 21,3°C  ·  💧 0 mm (limpo)</div>
+        </div>
+        <div class="day-score good">7.2</div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="stat-label">Onda</div><div class="stat-value">0,6 – 0,7 m</div></div>
+        <div class="stat"><div class="stat-label">Período</div><div class="stat-value">6,6 s</div></div>
+        <div class="stat"><div class="stat-label">Swell</div><div class="stat-value">SE</div></div>
+        <div class="stat"><div class="stat-label">SST</div><div class="stat-value">20,7 °C</div></div>
+      </div>
+      <div class="hourly">
+        <h3>Por hora</h3>
+        <table class="hr-tbl">
+          <thead><tr><th class="lbl"></th><th>6h</th><th>9h</th><th>12h</th><th>15h</th><th>18h</th></tr></thead>
+          <tbody>
+            <tr><td class="lbl">Onda (m)</td><td class="cell-mid">0,66</td><td class="cell-mid">0,66</td><td class="cell-mid">0,66</td><td class="cell-mid">0,64</td><td class="cell-mid">0,62</td></tr>
+            <tr><td class="lbl">Período (s)</td><td class="cell-mid">6,4</td><td class="cell-good">6,7</td><td class="cell-good">6,7</td><td class="cell-good">6,7</td><td class="cell-mid">6,6</td></tr>
+            <tr><td class="lbl">Vento (kt)</td><td class="cell-good">4,5</td><td class="cell-good">4,1</td><td class="cell-good">1,5</td><td class="cell-mid">5,4</td><td class="cell-mid">4,8</td></tr>
+            <tr><td class="lbl">Dir. vento</td><td class="cell-good">W⬅️</td><td class="cell-good">W⬅️</td><td class="cell-good">NNW↙️</td><td class="cell-bad">E↘️</td><td class="cell-mid">ESE↘️</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="tides">
+        <h3 style="margin:0 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:600">Marés (coef. 68–69)</h3>
+        <div class="tide-row">
+          <div class="tide-pill alta">▲ <span class="tide-time">00:09</span> 0,8 m</div>
+          <div class="tide-pill baixa">▼ <span class="tide-time">08:38</span> 0,2 m</div>
+          <div class="tide-pill alta">▲ <span class="tide-time">12:43</span> 0,8 m</div>
+          <div class="tide-pill baixa">▼ <span class="tide-time">21:16</span> 0,2 m</div>
+        </div>
+      </div>
+      <div class="window">
+        <div class="win-label">🎯 Janela ideal — sessão do dia</div>
+        <div class="win-text"><strong>9h – 13h</strong> · vento terral W (4 kt) suaviza pra calmaria, maré enchendo da baixa 8:38 → preia 12:43. Onda 0,66 m SE com 6,7 s — período mais limpo da semana. Atalaia deve render paredes médias com o molhe canalizando.</div>
+      </div>
+    </div>
+
+    <!-- DIA 29 -->
+    <div class="day-card">
+      <div class="day-head bad">
+        <div>
+          <div class="day-title">Sexta · 29 mai</div>
+          <div class="day-sub">☁️ 13,8° – 20,4°C  ·  💧 0,2 mm</div>
+        </div>
+        <div class="day-score bad">3.8</div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="stat-label">Onda</div><div class="stat-value">~0,5 m</div></div>
+        <div class="stat"><div class="stat-label">Período</div><div class="stat-value">6,5 s</div></div>
+        <div class="stat"><div class="stat-label">Swell</div><div class="stat-value">ESE</div></div>
+        <div class="stat"><div class="stat-label">SST</div><div class="stat-value">20,5 °C</div></div>
+      </div>
+      <div class="hourly">
+        <h3>Por hora</h3>
+        <table class="hr-tbl">
+          <thead><tr><th class="lbl"></th><th>6h</th><th>9h</th><th>12h</th><th>15h</th><th>18h</th></tr></thead>
+          <tbody>
+            <tr><td class="lbl">Onda (m)</td><td class="cell-bad">0,56</td><td class="cell-bad">0,54</td><td class="cell-bad">0,52</td><td class="cell-bad">0,50</td><td class="cell-bad">0,48</td></tr>
+            <tr><td class="lbl">Período (s)</td><td class="cell-mid">6,6</td><td class="cell-mid">6,6</td><td class="cell-mid">6,5</td><td class="cell-mid">6,4</td><td class="cell-mid">6,3</td></tr>
+            <tr><td class="lbl">Vento (kt)</td><td class="cell-good">4,2</td><td class="cell-good">2,1</td><td class="cell-good">3,4</td><td class="cell-mid">4,7</td><td class="cell-good">3,3</td></tr>
+            <tr><td class="lbl">Dir. vento</td><td class="cell-mid">SW↗️</td><td class="cell-good">W⬅️</td><td class="cell-mid">ENE↗️</td><td class="cell-bad">E↘️</td><td class="cell-mid">ESE↘️</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="tides">
+        <h3 style="margin:0 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:600">Marés (coef. 70–71)</h3>
+        <div class="tide-row">
+          <div class="tide-pill alta">▲ <span class="tide-time">00:40</span> 0,8 m</div>
+          <div class="tide-pill baixa">▼ <span class="tide-time">09:24</span> 0,1 m</div>
+          <div class="tide-pill alta">▲ <span class="tide-time">13:31</span> 0,8 m</div>
+          <div class="tide-pill baixa">▼ <span class="tide-time">22:07</span> 0,2 m</div>
+        </div>
+      </div>
+      <div class="window bad">
+        <div class="win-label">⚠️ Dia fraco</div>
+        <div class="win-text">Mar miúdo, sem energia. Se for entrar: <strong>8h – 11h</strong> com vento terral W leve e maré enchendo pra preia 13:31. Pega o longboard, esquece a prancha curta.</div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- CHARTS -->
+  <section class="charts">
+    <div class="chart-card">
+      <h3>📈 Altura de onda por hora (m)</h3>
+      <div class="chart-wrap"><canvas id="waveChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>💨 Vento por hora (nós)</h3>
+      <div class="chart-wrap"><canvas id="windChart"></canvas></div>
+    </div>
+  </section>
+
+  <!-- ROUPA -->
+  <div class="gear-card">
+    <h2>🧥 Equipamento sugerido</h2>
+    <p style="margin:0 0 14px;color:var(--muted);font-size:13px">Temperatura do mar entre 20,4° e 21,0°C e ar mínimo de 11°C de madrugada — outono entrando, água ainda agradável.</p>
+    <div class="gear-grid">
+      <div class="gear-item">
+        <div class="gear-icon">🌡️</div>
+        <div class="gear-title">Roupa de borracha</div>
+        <div class="gear-desc"><strong>Long John 3/2 mm</strong> de manhã cedo (água 20°C + vento). Pra sessões depois das 11h, <strong>top 2 mm + bermuda climber</strong> dá conta.</div>
+      </div>
+      <div class="gear-item">
+        <div class="gear-icon">🏄</div>
+        <div class="gear-title">Prancha</div>
+        <div class="gear-desc">Com ondas 0,5–0,7 m e período curto: <strong>fish, mid-length ou longboard</strong>. Shortboard só na quinta de manhã se quiser; vai precisar remar muito.</div>
+      </div>
+      <div class="gear-item">
+        <div class="gear-icon">🧦</div>
+        <div class="gear-title">Acessórios</div>
+        <div class="gear-desc">Sapatilha opcional (rocha no molhe), lycra UV pra meio-dia, parafina <strong>cool/cold water</strong> (18–23°C).</div>
+      </div>
+      <div class="gear-item">
+        <div class="gear-icon">☀️</div>
+        <div class="gear-title">Janela com sol</div>
+        <div class="gear-desc">Nascer 06:53 · pôr 17:29. Quinta tem o céu mais limpo. Quarta e sexta com nuvens à tarde — UV mais baixo, mas leve protetor mesmo assim.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- NOTES TÉCNICAS -->
+  <div class="notes">
+    <h3>📝 Notas do analista</h3>
+    <p style="margin:0 0 6px">Atalaia funciona como beach break com influência dos molhes de Itajaí. Pede swell de E/SE (que é o que vem) e prefere vento terral W/NW. O canal do Itajaí-Açu afeta a corrente — atenção quando a maré tá vazando forte (após 13h na quinta, por exemplo).</p>
+    <ul>
+      <li><strong>Período curto (~6 s):</strong> os 3 dias têm ondulação gerada por vento local, não swell de tempestade. Ondas vão ter parede curta — bom pra giro, ruim pra rasgada longa.</li>
+      <li><strong>Janela terral:</strong> sempre 6h às 12h. Depois das 14h o vento gira pra E/SE (maral) e arruína a parede.</li>
+      <li><strong>Maré:</strong> coeficiente subindo da quarta (65) pra sexta (71). Quanto maior o coef, mais corrente. Atalaia rende melhor em maré média/enchente.</li>
+      <li><strong>Risco fraco de chuva</strong> na quarta e sexta (0,2 mm). Quinta seco e limpo.</li>
+    </ul>
+    <div class="legend">
+      <span><span class="dot" style="background:#22c55e"></span> Condição boa</span>
+      <span><span class="dot" style="background:#f59e0b"></span> Aceitável</span>
+      <span><span class="dot" style="background:#ef4444"></span> Ruim</span>
+    </div>
+  </div>
+
+  <footer>
+    Dados: <a href="https://open-meteo.com/" target="_blank">Open-Meteo Marine API</a> (modelo Wavewatch III/GFS via NOAA) · marés
+    <a href="https://tabuademares.com/br/santa-catarina/itajai" target="_blank">Tábua de Marés</a> (Marinha do Brasil) ·
+    referência local <a href="https://surfguru.com.br/previsao/brasil/santa-catarina/itajai/praia-atalaia" target="_blank">Surfguru</a> ·
+    <a href="https://pt.surf-forecast.com/breaks/Atalaia/forecasts/latest/six_day" target="_blank">Surf-Forecast</a><br>
+    Análise emitida 27/mai/2026 · revalidar antes de cair n'água, vento muda rápido.
+  </footer>
+
+</div>
+
+<script>
+const labels = ['00','03','06','09','12','15','18','21','00','03','06','09','12','15','18','21','00','03','06','09','12','15','18','21'];
+// 3 days hourly data (3h step) from open-meteo
+const waveDay1 = [0.58,0.58,0.56,0.52,0.52,0.58,0.86,0.74];
+const waveDay2 = [0.64,0.64,0.66,0.66,0.66,0.64,0.62,0.58];
+const waveDay3 = [0.56,0.56,0.56,0.54,0.52,0.50,0.48,0.50];
+const wave = [...waveDay1, ...waveDay2, ...waveDay3];
+
+const windDay1 = [3.5,4.0,2.7,1.7,0.7,5.9,6.3,4.0];
+const windDay2 = [3.8,4.2,4.5,4.1,1.5,5.4,4.8,3.2];
+const windDay3 = [3.0,3.8,4.2,2.1,3.4,4.7,3.3,2.5];
+const wind = [...windDay1, ...windDay2, ...windDay3];
+
+const dayBorders = [
+  {start:0, end:8, color:'rgba(245,158,11,0.06)', label:'Qua 27'},
+  {start:8, end:16, color:'rgba(34,197,94,0.10)', label:'Qui 28'},
+  {start:16, end:24, color:'rgba(239,68,68,0.06)', label:'Sex 29'}
+];
+
+const dayBg = {
+  id: 'dayBg',
+  beforeDraw(chart) {
+    const {ctx, chartArea: {top, bottom, left, right}, scales: {x}} = chart;
+    if (!x) return;
+    ctx.save();
+    dayBorders.forEach(d => {
+      const x1 = x.getPixelForValue(d.start);
+      const x2 = x.getPixelForValue(Math.min(d.end-1, labels.length-1));
+      ctx.fillStyle = d.color;
+      ctx.fillRect(x1, top, x2-x1, bottom-top);
+      ctx.fillStyle = '#8aa2bd';
+      ctx.font = '600 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(d.label, (x1+x2)/2, top+12);
+    });
+    ctx.restore();
+  }
+};
+
+const baseOpts = {
+  responsive:true, maintainAspectRatio:false,
+  plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false}},
+  scales:{
+    x:{ticks:{color:'#8aa2bd',font:{size:10}}, grid:{color:'#152e47'}},
+    y:{ticks:{color:'#8aa2bd',font:{size:10}}, grid:{color:'#152e47'}, beginAtZero:true}
+  }
+};
+
+new Chart(document.getElementById('waveChart'), {
+  type:'line',
+  data:{labels:labels, datasets:[{
+    label:'Altura (m)', data:wave, borderColor:'#2dd4bf', backgroundColor:'rgba(45,212,191,0.15)',
+    fill:true, tension:0.35, borderWidth:2, pointRadius:2
+  }]},
+  options:baseOpts,
+  plugins:[dayBg]
+});
+
+new Chart(document.getElementById('windChart'), {
+  type:'bar',
+  data:{labels:labels, datasets:[{
+    label:'Vento (kt)', data:wind, backgroundColor:wind.map(v=>v<5?'rgba(34,197,94,0.6)':v<10?'rgba(245,158,11,0.6)':'rgba(239,68,68,0.6)'),
+    borderColor:wind.map(v=>v<5?'#22c55e':v<10?'#f59e0b':'#ef4444'), borderWidth:1
+  }]},
+  options:baseOpts,
+  plugins:[dayBg]
+});
+</script>
+</body>
+</html>
