@@ -1,0 +1,38 @@
+name: Atualizar Surf Report
+
+on:
+  schedule:
+    # 6:00 BRT = 9:00 UTC
+    - cron: "0 9 * * *"
+  workflow_dispatch:  # permite rodar manualmente pelo botão "Run workflow"
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Gerar index.html
+        run: python generate.py
+
+      - name: Commit se houve mudança
+        run: |
+          git config user.name "atalaia-surf-bot"
+          git config user.email "actions@github.com"
+          if [[ -n "$(git status --porcelain index.html)" ]]; then
+            git add index.html
+            git commit -m "🌊 Atualização automática $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+            echo "✓ index.html atualizado e publicado"
+          else
+            echo "Nenhuma mudança no index.html — nada a commitar"
+          fi
