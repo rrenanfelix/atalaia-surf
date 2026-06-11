@@ -4,7 +4,7 @@ Atalaia Surf Report — gerador automático (v2).
 
 Busca dados frescos do Open-Meteo (Wavewatch III + GFS) + marés do
 Tabuademares para a Praia do Atalaia (Itajaí / SC), calcula ranking
-discriminativo dos próximos 3 dias para surfista intermediário,
+discriminativo dos próximos 4 dias para surfista intermediário,
 e regrava o index.html.
 
 Roda diariamente via GitHub Actions às 6h BRT.
@@ -223,7 +223,7 @@ def fetch_tides() -> dict:
 def fetch_data():
     today = datetime.now(BR).date()
     start = today.isoformat()
-    end = (today + timedelta(days=2)).isoformat()
+    end = (today + timedelta(days=3)).isoformat()
 
     marine = fetch_json(
         f"https://marine-api.open-meteo.com/v1/marine?latitude={LAT}&longitude={LON}"
@@ -651,7 +651,7 @@ def render_html(by_day: dict, days_meta: list) -> str:
     <div class="h-top">
       <div>
         <h1><span class="wave">≋</span> Análise de Surf — Praia do Atalaia</h1>
-        <div class="subtitle">Itajaí / SC · próximos 3 dias · perfil intermediário</div>
+        <div class="subtitle">Itajaí / SC · próximos 4 dias · perfil intermediário</div>
       </div>
       <div><span class="badge">Atualizado {now_str}</span></div>
     </div>
@@ -664,7 +664,7 @@ def render_html(by_day: dict, days_meta: list) -> str:
   </header>
 
   <section class="ranking">
-    <h2>🏆 Ranking dos 3 dias</h2>
+    <h2>🏆 Ranking dos 4 dias</h2>
     {ranking}
   </section>
 
