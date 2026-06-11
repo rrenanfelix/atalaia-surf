@@ -506,8 +506,8 @@ def render_day_card(meta: dict, hours: dict) -> str:
 
 def render_ranking(days_meta: list) -> str:
     ranked = sorted(days_meta, key=lambda d: d["score"], reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
-    colors = ["good", "mid", "bad"]
+    medals = ["🥇", "🥈", "🥉", "4️⃣"]
+    colors = ["good", "mid", "bad", "bad"]
     rows = []
     for i, d in enumerate(ranked):
         rows.append(f"""
