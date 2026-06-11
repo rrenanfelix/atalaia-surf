@@ -2,8 +2,10 @@ name: Atualizar Surf Report
 
 on:
   schedule:
-    # 6:00 BRT = 9:00 UTC
+    # 6h, 12h e 18h BRT = 9, 15 e 21 UTC
     - cron: "0 9 * * *"
+    - cron: "0 15 * * *"
+    - cron: "0 21 * * *"
   workflow_dispatch:  # permite rodar manualmente pelo botão "Run workflow"
 
 permissions:
