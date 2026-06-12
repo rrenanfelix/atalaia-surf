@@ -3,9 +3,7 @@ name: Atualizar Surf Report
 on:
   schedule:
     # 6h, 12h e 18h BRT = 9, 15 e 21 UTC
-    - cron: "0 9 * * *"
-    - cron: "0 15 * * *"
-    - cron: "0 21 * * *"
+    - cron: "17 */2 * * *"  # a cada 2h UTC - cron do GitHub atrasa/pula, folga garante site fresco
   workflow_dispatch:  # permite rodar manualmente pelo botão "Run workflow"
 
 permissions:
